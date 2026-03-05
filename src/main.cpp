@@ -27,13 +27,9 @@
 // Utils
 #include "../include/nema_motors.hpp"
 #include "../include/xiaomi_lidar.hpp"
+#include "../include/uros_wifi_config.h"         //Wi-Fi config
+#
 
-// Wifi Configuration
-IPAddress agent_ip(192, 168, 0, 186);
-size_t agent_port = 8888;
-
-char ssid[] = "clarc1";
-char psk[] = "robotclarc1";
 
 // ROS entities General
 rclc_executor_t executor;
@@ -49,7 +45,7 @@ rcl_node_t node_lidar;
 rcl_node_t node_motor;
 
 // Synchronization variables (used for synchronizing ESP32 time with the PC agent)
-const int sync_timeout_ms = 2000;
+const int sync_timeout_ms = 2000;       
 int64_t ros_synced_time_ms = 0;
 int64_t ros_synced_time_ns = 0;
 long ms_before_sync = 0;
@@ -113,10 +109,13 @@ void setup() {
     rcl_init_options_init(&init_options, allocator);
     rcl_init_options_set_domain_id(&init_options, 0);
 
+    Serial.println("Micro-ROS WiFi transports set...");
+
 
     // Initialize micro-ROS
     create_entities();
-
+    Serial.println("Entities creation finished...");
+    
     // Create FreeRTOS task for reading serial data from the Lidar
     xTaskCreatePinnedToCore(
         [](void *pvParameters) {
@@ -297,7 +296,7 @@ void create_entities(){
         NULL, 
         &init_options, 
         &allocator)); 
-    
+
 
     // create lidar node
     RCCHECK(rclc_node_init_default(
