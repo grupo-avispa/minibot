@@ -3,6 +3,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
-include/secrets.h
 extra_packages/*
 !extra_packages/.gitkeep
+config/uros_wifi_config.h
+config/secrets.h

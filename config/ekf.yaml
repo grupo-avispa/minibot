@@ -1,0 +1,46 @@
+ekf_filter_node:
+  ros__parameters:
+    # Pose frequency
+    frequency: 30.0
+    
+    # 2D Mode 
+    two_d_mode: true
+    
+    # TF EKF
+    publish_tf: true
+
+    # frame names
+    map_frame: map              # world map
+    odom_frame: odom            # origin frame
+    base_link_frame: base_link  # robot center
+    world_frame: odom           # world map is odom
+
+    # =======================================================
+    # SENSOR 1: Motor odom
+    # =======================================================
+    odom0: /minibot/odom
+    
+    # matrix: 
+    odom0_config: [false, false, false,     #   X, Y, Z             (0 0 0) 
+                   false, false, false,     #   Roll, Pitch, Yaw    (0 0 0) 
+                   true,  true,  false,     #   Vx, Vy, Vz          (1 1 0) 
+                   false, false, true,      #   Vroll, Vpitch, Vyaw (0 0 1) 
+                   false, false, false]     #   Ax, Ay, Az          (0 0 0)
+    
+    # odom Twist
+    odom0_differential: false
+
+    # =======================================================
+    # SENSOR 2: IMU BMI160 (6 DOF)
+    # =======================================================
+    imu0: /imu/data
+    
+    # matrix
+    imu0_config: [false, false, false,        #   X, Y, Z             (0 0 0) 
+                   false, false, false,       #   Roll, Pitch, Yaw    (0 0 0) 
+                   false,  false,  false,     #   Vx, Vy, Vz          (0 0 0) 
+                   false, false, true,        #   Vroll, Vpitch, Vyaw (0 0 1) 
+                   true, false, false]        #   Ax, Ay, Az          (1 0 0)
+    
+    # No gravitational acceleration
+    imu0_remove_gravitational_acceleration: true
