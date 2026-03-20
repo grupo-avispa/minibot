@@ -8,6 +8,7 @@
 // micro-ROS includes
 #include <rcl/rcl.h>
 #include <sensor_msgs/msg/imu.h>
+#include <tf2_msgs/msg/tf_message.h>
 
 class Bmi160Sensor {
 public:
@@ -21,6 +22,9 @@ public:
     rcl_publisher_t imu_pub;
     rcl_timer_t timer_imu;
     sensor_msgs__msg__Imu imu_msg;
+
+    rcl_publisher_t tf_pub;
+    tf2_msgs__msg__TFMessage tf_msg;
 
 private:
     BMI160 IMU;

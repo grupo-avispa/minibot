@@ -149,7 +149,7 @@ void NemaMotors::update_pose(const long *steps_left, const long *steps_right)
 void NemaMotors::timer_odometry_callback(rcl_timer_t *timer, int64_t last_call_time)
 {
     if (timer != NULL)
-    {
+    {/*
         // Get current time
         // Lógica de tiempo unificada (Elimina el desbordamiento de nanosegundos)
         int64_t current_time_ms = ros_synced_time_ms + (millis() - ms_before_sync);
@@ -203,6 +203,6 @@ void NemaMotors::timer_odometry_callback(rcl_timer_t *timer, int64_t last_call_t
             Serial.println("Agent not reachable, skipping TF publish.");
             return;
         }
-        rcl_publish(&tf_pub, &tf_msg, NULL);
+        rcl_publish(&tf_pub, &tf_msg, NULL);*/
     }
 }

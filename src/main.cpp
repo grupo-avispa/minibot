@@ -17,7 +17,7 @@
 #include <rosidl_runtime_c/primitives_sequence_functions.h>
 #include <rmw_microros/rmw_microros.h>
 
-// Motor
+// Motor / Nav
 #include <AccelStepper.h>
 #include <nav_msgs/msg/odometry.h>
 #include <geometry_msgs/msg/twist.h>
@@ -27,290 +27,189 @@
 // IMU
 #include <sensor_msgs/msg/imu.h>
 
-// Utils
+// Modules
 #include "../include/nema_motors.hpp"
 #include "../include/xiaomi_lidar.hpp"
-#include "../config/uros_wifi_config.h" //Wi-Fi config
+#include "../config/uros_wifi_config.h"
 #include "../include/bmi160_sensor.hpp"
+#include "../include/jga_motors.hpp"
 
-// ROS entities General
-rclc_executor_t executor;
-rclc_support_t support;
-rcl_allocator_t allocator;
-rcl_timer_t sync_timer;
+// ─── ROS entities ─────────────────────────────────────────────────────────────
+rclc_executor_t    executor;
+rclc_support_t     support;
+rcl_allocator_t    allocator;
+rcl_timer_t        sync_timer;
 rcl_init_options_t init_options;
+rcl_node_t         node_lidar;
+rcl_node_t         node_motor;
 
-// ROS entities Lidar
-rcl_node_t node_lidar;
+// Un único publisher /tf compartido entre jga_motors e imu_sensor
+rcl_publisher_t shared_tf_pub;
 
-// Ros entities for Motor
-rcl_node_t node_motor;
+// ─── Sync ─────────────────────────────────────────────────────────────────────
+const int    sync_timeout_ms    = 2000;
+int64_t      ros_synced_time_ms = 0;
+int64_t      ros_synced_time_ns = 0;
+long         ms_before_sync     = 0;
+unsigned int missing_syncs      = 0;
 
-// Synchronization variables (used for synchronizing ESP32 time with the PC agent)
-const int sync_timeout_ms = 2000;
-int64_t ros_synced_time_ms = 0;
-int64_t ros_synced_time_ns = 0;
-long ms_before_sync = 0;
-unsigned int missing_syncs = 0;
-
-// Hardware timer for motor control
-hw_timer_t *timerMotor = NULL;
-
-// Spinning ros task handle
+// ─── Objects ──────────────────────────────────────────────────────────────────
 TaskHandle_t rosTaskHandle;
+XiaomiLidar  xiaomi_lidar;
+Bmi160Sensor imu_sensor;
+JgaMotors    jga_motors;
 
-NemaMotors nema_motors;   // Create an instance of the NemaMotors class
-XiaomiLidar xiaomi_lidar; // Create an instance of the XiaomiLidar class
-Bmi160Sensor imu_sensor;  // Create an instande of the BMI160Sensor class
-
-// Function prototypes
-
-// Micro-ROS task and synchronization
+// ─── Prototypes ───────────────────────────────────────────────────────────────
 void vTaskMicroROS(void *pvParameters);
 void sync_timer_callback(rcl_timer_t *timer, int64_t last_call_time);
 void destroy_entities();
 void create_entities();
 
-// Motor control ISR
-void IRAM_ATTR timerMotorInterrupt();
+// ─── Macros ───────────────────────────────────────────────────────────────────
+#define RCCHECK(fn)                                                   \
+    {                                                                 \
+        rcl_ret_t temp_rc = fn;                                       \
+        if (temp_rc != RCL_RET_OK) {                                  \
+            Serial.printf("[RCCHECK FAIL] line %d rc=%d\n",          \
+                          __LINE__, (int)temp_rc);                    \
+            error_loop();                                             \
+        }                                                             \
+    }
+#define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; (void)temp_rc; }
 
-// Macros for checking return of ROS2 functions and entering an infinite error loop in case of error
-#define RCCHECK(fn)                  \
-    {                                \
-        rcl_ret_t temp_rc = fn;      \
-        if ((temp_rc != RCL_RET_OK)) \
-        {                            \
-            error_loop();            \
-        }                            \
-    }
-#define RCSOFTCHECK(fn)              \
-    {                                \
-        rcl_ret_t temp_rc = fn;      \
-        if ((temp_rc != RCL_RET_OK)) \
-        {                            \
-        }                            \
-    }
-// Infinite error loop function. If something fails, the device will get stuck here
 void error_loop()
 {
-    while (1)
-    {
-        delay(100);
-    }
+    jga_motors.emergency_stop();
+    Serial.println("[ERROR_LOOP] Halted.");
+    while (1) { delay(100); }
 }
 
-/*
----------------------------------
-|                               |
-|            SETUP              |
-|                               |
----------------------------------
-*/
-
+// ─── SETUP ────────────────────────────────────────────────────────────────────
 void setup()
 {
-    // Serial used to send data to PC
     Serial.begin(115200);
+    delay(500);
 
-    nema_motors.init(); // Initialize the Nema motors
+    Serial.println("\n========== MINIBOT BOOT ==========");
 
-    imu_sensor.init(); // Initialize the mpu6050
+    jga_motors.init();
+    Serial.println("[SETUP] JGA motors OK");
 
-    Serial.println("Steppers initialized...");
+    imu_sensor.init();
+    Serial.println("[SETUP] IMU OK");
 
     set_microros_wifi_transports(ssid, psk, agent_ip, agent_port);
+    Serial.println("[SETUP] WiFi transport set");
 
-    Serial.println("Micro-ROS WiFi transports set...");
-
-    allocator = rcl_get_default_allocator();
-
-    // create init_options and set domain ID
+    allocator    = rcl_get_default_allocator();
     init_options = rcl_get_zero_initialized_init_options();
     rcl_init_options_init(&init_options, allocator);
     rcl_init_options_set_domain_id(&init_options, 0);
 
-    Serial.println("Micro-ROS WiFi transports set...");
-
-    // Initialize micro-ROS
     create_entities();
-    Serial.println("Entities creation finished...");
+    Serial.println("[SETUP] Entities OK");
 
-    // Create FreeRTOS task for reading serial data from the Lidar
     xTaskCreatePinnedToCore(
-        [](void *pvParameters)
-        {
-            xiaomi_lidar.SerialReadTask(pvParameters);
-        },
-        "SerialReadTask",
-        4096,
-        NULL,
-        1,
-        &xiaomi_lidar.serialTaskHandle,
-        0);
-    Serial.println("Serial read task created...");
+        [](void *p) { xiaomi_lidar.SerialReadTask(p); },
+        "SerialReadTask", 4096, NULL, 1, &xiaomi_lidar.serialTaskHandle, 0);
 
-    // Create FreeRTOS task for crafting the scan msg and publishing
     xTaskCreatePinnedToCore(
-        [](void *pvParameters)
-        {
-            xiaomi_lidar.RosPublishTask(pvParameters);
-        },
-        "RosPublishTask",
-        4096,
-        NULL,
-        2,
-        &xiaomi_lidar.rosPubTaskHandle,
-        1);
-    Serial.println("ROS publish task created...");
+        [](void *p) { xiaomi_lidar.RosPublishTask(p); },
+        "RosPublishTask", 4096, NULL, 2, &xiaomi_lidar.rosPubTaskHandle, 1);
 
-
-    // Create FreeRTOS task for micro-ROS executor
     xTaskCreatePinnedToCore(
-        vTaskMicroROS,
-        "vTaskMicroROS",
-        10000,
-        (void *)1,
-        3,
-        &rosTaskHandle,
-        1);
-    if (rosTaskHandle == NULL)
-    {
-        Serial.println("ERROR: Failed to create micro-ROS task");
+        vTaskMicroROS, "vTaskMicroROS", 10000, (void *)1, 3, &rosTaskHandle, 1);
+
+    if (rosTaskHandle == NULL) {
+        Serial.println("[SETUP] ERROR: micro-ROS task creation failed");
         error_loop();
     }
-    Serial.println("Micro-ROS task created...");
 
-    // Create a hardware timer for the motor control
-    timerMotor = timerBegin(0, 80, true);                         // Timer 0, clock divisor 80
-    timerAttachInterrupt(timerMotor, &timerMotorInterrupt, true); // Attach the interrupt handling function
-    timerAlarmWrite(timerMotor, 500, true);                       // Interrupt every 500 us
-    timerAlarmEnable(timerMotor);                                 // Enable the alarm
-    Serial.println("Hardware timer for motor control initialized...");
+    Serial.println("[SETUP] All tasks running.");
+    Serial.println("===================================\n");
 }
 
-void loop()
-{
-    // Main loop does nothing, tasks handle everything
-}
+void loop() {}
 
-/*
----------------------------------
-|                               |
-|       Running uRos task       |
-|                               |
----------------------------------
-*/
-
+// ─── MICRO-ROS TASK ───────────────────────────────────────────────────────────
 void vTaskMicroROS(void *pvParameters)
 {
     configASSERT(((uint32_t)pvParameters) == 1);
-    // Initialize the micro-ROS executor
+    uint32_t spin_count = 0;
+
     for (;;)
     {
-        // Serial.printf("Stack usage (executor task): %d words\n", uxTaskGetStackHighWaterMark(NULL));
         rclc_executor_spin_some(&executor, RCL_MS_TO_NS(20));
+        spin_count++;
 
-        // Check if the agent is reachable
-        if (RMW_RET_OK != rmw_uros_ping_agent(100, 1))
-        { // timeout 100ms, 1 try
-            Serial.println("Agent not reachable ...");
+        // Log de estado cada ~5 s (250 ciclos x 20 ms = 5000 ms)
+        if (spin_count % 250 == 0) {
+            bool ok = (rmw_uros_ping_agent(50, 1) == RMW_RET_OK);
+            Serial.printf("[uROS] spins=%u agent=%s missing=%u\n",
+                          spin_count, ok ? "OK" : "FAIL", missing_syncs);
+        }
+
+        if (rmw_uros_ping_agent(100, 1) != RMW_RET_OK) {
             missing_syncs++;
-        }
-        if (missing_syncs > 10)
-        {
-            // If the agent is not reachable, try to reconnect
-            destroy_entities();
-            Serial.println("Recreating entities...");
-            create_entities();
-            missing_syncs = 0; // Reset the missing syncs counter
+        } else {
+            if (missing_syncs > 0) {
+                Serial.println("[uROS] Agent reconnected.");
+                missing_syncs = 0;
+            }
         }
 
-        vTaskDelay(20/portTICK_PERIOD_MS);
-        // Serial.println("Micro-ROS executor spinning...");
+        if (missing_syncs > 10) {
+            Serial.println("[uROS] Agent lost — stopping motors and recreating entities.");
+            jga_motors.emergency_stop();
+            destroy_entities();
+            create_entities();
+            missing_syncs = 0;
+        }
+
+        vTaskDelay(20 / portTICK_PERIOD_MS);
     }
 }
 
-/*
----------------------------------
-|                               |
-|        Motor control          |
-|        HW timer ISR           |
----------------------------------
-*/
-
-void IRAM_ATTR timerMotorInterrupt()
-{
-    // This function is called every 500 us
-    // It runs the stepper motor at the latest speed set by the cmd_vel subscription callback
-    nema_motors.run_motors();
-}
-
-/*
----------------------------------
-|                               |
-|       Synch with agent        |
-|        timer callback         |
----------------------------------
-*/
-
+// ─── SYNC TIMER ───────────────────────────────────────────────────────────────
 void sync_timer_callback(rcl_timer_t *timer, int64_t last_call_time)
 {
-    Serial.println("[TIMER] Sync timer callback called");
-    if (timer == NULL)
-    {
-        Serial.println("Error in timer_callback: timer parameter is NULL\n");
-        return;
-    }
-    // Synchronize time with the agent
+    if (timer == NULL) return;
     rmw_uros_sync_session(sync_timeout_ms);
 
-    if (rmw_uros_epoch_synchronized())
-    {
-        // Get time in milliseconds or nanoseconds
+    if (rmw_uros_epoch_synchronized()) {
         ros_synced_time_ms = rmw_uros_epoch_millis();
         ros_synced_time_ns = rmw_uros_epoch_nanos();
-        ms_before_sync = millis();
+        ms_before_sync     = millis();
 
-        imu_sensor.ros_synced_time_ms = ros_synced_time_ms;
-        imu_sensor.ms_before_sync = ms_before_sync;
-
-        nema_motors.ros_synced_time_ms = ros_synced_time_ms;
-        nema_motors.ros_synced_time_ns = ros_synced_time_ns;
-        nema_motors.ms_before_sync = ms_before_sync;
-
+        imu_sensor.ros_synced_time_ms  = ros_synced_time_ms;
+        imu_sensor.ms_before_sync      = ms_before_sync;
+        jga_motors.ros_synced_time_ms  = ros_synced_time_ms;
+        jga_motors.ros_synced_time_ns  = ros_synced_time_ns;
+        jga_motors.ms_before_sync      = ms_before_sync;
         xiaomi_lidar.ros_synced_time_ms = ros_synced_time_ms;
         xiaomi_lidar.ros_synced_time_ns = ros_synced_time_ns;
-        xiaomi_lidar.ms_before_sync = ms_before_sync;
+        xiaomi_lidar.ms_before_sync     = ms_before_sync;
 
-        Serial.printf("Synchronized timestamp with PC agent\n");
-    }
-    else
-    {
-        Serial.println("Error in sync_timer_callback: time not synchronized\n");
+        Serial.println("[SYNC] OK");
+    } else {
+        Serial.println("[SYNC] WARNING: not synchronized");
     }
 }
 
-/*
----------------------------------
-|                               |
-|      Destroying etities       |
-|                               |
----------------------------------
-*/
-
+// ─── DESTROY ENTITIES ─────────────────────────────────────────────────────────
 void destroy_entities()
 {
-    Serial.println("Destroying entities...");
-    // Destroy the entities created
+    Serial.println("[DESTROY] Destroying entities...");
     rmw_context_t *rmw_context = rcl_context_get_rmw_context(&support.context);
     (void)rmw_uros_set_context_entity_destroy_session_timeout(rmw_context, 0);
-    rcl_publisher_fini(&xiaomi_lidar.laser_publisher, &node_lidar);
-    rcl_subscription_fini(&nema_motors.cmd_vel_sub, &node_motor);
-    rcl_publisher_fini(&nema_motors.odom_pub, &node_motor);
-    rcl_publisher_fini(&nema_motors.tf_pub, &node_motor);
-    rcl_publisher_fini(&imu_sensor.imu_pub, &node_motor);
 
-    rcl_timer_fini(&nema_motors.timer_odom);
+    rcl_publisher_fini(&xiaomi_lidar.laser_publisher, &node_lidar);
+    rcl_subscription_fini(&jga_motors.cmd_vel_sub,    &node_motor);
+    rcl_publisher_fini(&jga_motors.odom_pub,           &node_motor);
+    rcl_publisher_fini(&imu_sensor.imu_pub,            &node_motor);
+    rcl_publisher_fini(&shared_tf_pub,                 &node_motor);
+
+    rcl_timer_fini(&jga_motors.timer_odom);
     rcl_timer_fini(&sync_timer);
     rcl_timer_fini(&imu_sensor.timer_imu);
 
@@ -318,137 +217,79 @@ void destroy_entities()
     rcl_node_fini(&node_motor);
     rclc_support_fini(&support);
     rclc_executor_fini(&executor);
+    Serial.println("[DESTROY] Done.");
 }
 
-/*
----------------------------------
-|                               |
-|        Create etities         |
-|                               |
----------------------------------
-*/
-
+// ─── CREATE ENTITIES ──────────────────────────────────────────────────────────
 void create_entities()
 {
+    Serial.println("[CREATE] Initializing...");
+    memset(&imu_sensor.imu_msg, 0, sizeof(sensor_msgs__msg__Imu));
 
-    memset(&imu_sensor.imu_msg, 0, sizeof(sensor_msgs__msg__Imu)); //clean imu offset
+    RCCHECK(rclc_support_init_with_options(&support, 0, NULL, &init_options, &allocator));
+    RCCHECK(rclc_node_init_default(&node_lidar, "minibot_lidar", "", &support));
+    RCCHECK(rclc_node_init_default(&node_motor, "minibot_jga",   "", &support));
+    Serial.println("[CREATE] Nodes OK");
 
-
-    // create support structure
-    RCCHECK(rclc_support_init_with_options(
-        &support,
-        0, // 0 means no command line arguments
-        NULL,
-        &init_options,
-        &allocator));
-
-    // create lidar node
-    RCCHECK(rclc_node_init_default(
-        &node_lidar,
-        "minibot_lidar",
-        "",
-        &support));
-
-    // create motor node
-    RCCHECK(rclc_node_init_default(
-        &node_motor,
-        "minibot_nema",
-        "",
-        &support));
-
-    Serial.println("Micro-ROS nodes initialized...");
-
-    // create lidar publisher
     RCCHECK(rclc_publisher_init_best_effort(
-        &xiaomi_lidar.laser_publisher,
-        &node_lidar,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, LaserScan),
-        "/scan"));
+        &xiaomi_lidar.laser_publisher, &node_lidar,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, LaserScan), "/scan"));
 
-    // create publisher
     RCCHECK(rclc_publisher_init_default(
-        &nema_motors.odom_pub,
-        &node_motor,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(nav_msgs, msg, Odometry),
-        "/minibot/odom"));
+        &jga_motors.odom_pub, &node_motor,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(nav_msgs, msg, Odometry), "/minibot/odom"));
 
-    // create publisher
     RCCHECK(rclc_publisher_init_default(
-        &nema_motors.tf_pub,
-        &node_motor,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(tf2_msgs, msg, TFMessage),
-        "/tf"));
+        &imu_sensor.imu_pub, &node_motor,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu), "/imu/data_raw"));
 
-    // create subscription to cmd_vel
+    RCCHECK(rclc_publisher_init_default(
+        &shared_tf_pub, &node_motor,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(tf2_msgs, msg, TFMessage), "/tf"));
+
+    // Ambos objetos reciben el mismo handle (copia del struct, cuyo .impl
+    // es un puntero opaco que no cambia tras la creación en micro-ROS)
+    jga_motors.tf_pub = shared_tf_pub;
+    imu_sensor.tf_pub = shared_tf_pub;
+
+    Serial.println("[CREATE] Publishers OK");
+
     RCCHECK(rclc_subscription_init_default(
-        &nema_motors.cmd_vel_sub,
-        &node_motor,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist),
-        "/cmd_vel"));
+        &jga_motors.cmd_vel_sub, &node_motor,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist), "/cmd_vel"));
+    Serial.println("[CREATE] Subscription /cmd_vel OK");
 
-    // create odometry timer
     RCCHECK(rclc_timer_init_default(
-        &nema_motors.timer_odom,
-        &support,
-        RCL_MS_TO_NS(30), // Timer for publishing odometry every 30 ms
-        [](rcl_timer_t *timer, int64_t last_call_time)
-        {
-            nema_motors.timer_odometry_callback(timer, last_call_time);
+        &jga_motors.timer_odom, &support, RCL_MS_TO_NS(30),
+        [](rcl_timer_t *t, int64_t lct) {
+            jga_motors.timer_odometry_callback(t, lct);
         }));
 
-    // create timer subscription
     RCCHECK(rclc_timer_init_default(
-        &sync_timer,
-        &support,
-        RCL_MS_TO_NS(5000),
-        sync_timer_callback));
+        &sync_timer, &support, RCL_MS_TO_NS(5000), sync_timer_callback));
 
-    // create publisher for IMU raw data
-    RCCHECK(rclc_publisher_init_default(
-        &imu_sensor.imu_pub,
-        &node_motor,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
-        "/imu/data_raw"));
-
-    // create timer for IMU (50ms = 20Hz)
     RCCHECK(rclc_timer_init_default(
-        &imu_sensor.timer_imu,
-        &support,
-        RCL_MS_TO_NS(50),
-        [](rcl_timer_t *timer, int64_t last_call_time)
-        {
-            imu_sensor.timer_imu_callback(timer, last_call_time);
+        &imu_sensor.timer_imu, &support, RCL_MS_TO_NS(50),
+        [](rcl_timer_t *t, int64_t lct) {
+            imu_sensor.timer_imu_callback(t, lct);
         }));
 
-    // create executor
-    RCCHECK(rclc_executor_init(
-        &executor,
-        &support.context,
-        4, // 4 means the executor can handle 4 entities (3 timer and 1 subscription)
-        &allocator));
+    Serial.println("[CREATE] Timers OK");
+
+    // 4 handles: 1 subscription + 3 timers
+    RCCHECK(rclc_executor_init(&executor, &support.context, 4, &allocator));
 
     RCCHECK(rclc_executor_add_subscription(
-        &executor,
-        &nema_motors.cmd_vel_sub,
-        &nema_motors.cmd_vel_msg,
-        [](const void *msgin)
-        {
-            // Serial.println("[SUB] cmd_vel message received");
-            nema_motors.cmd_vel_sub_callback(msgin);
+        &executor, &jga_motors.cmd_vel_sub, &jga_motors.cmd_vel_msg,
+        [](const void *msgin) {
+            Serial.println("[EXEC] /cmd_vel received!");  // confirma que llega
+            jga_motors.cmd_vel_sub_callback(msgin);
         },
         ON_NEW_DATA));
 
-    RCCHECK(rclc_executor_add_timer(
-        &executor,
-        &nema_motors.timer_odom));
+    RCCHECK(rclc_executor_add_timer(&executor, &jga_motors.timer_odom));
+    RCCHECK(rclc_executor_add_timer(&executor, &sync_timer));
+    RCCHECK(rclc_executor_add_timer(&executor, &imu_sensor.timer_imu));
 
-    RCCHECK(rclc_executor_add_timer(
-        &executor,
-        &sync_timer));
-
-    RCCHECK(rclc_executor_add_timer(
-        &executor,
-        &imu_sensor.timer_imu));
-
-    Serial.println("Micro-ROS node initialized...");
+    Serial.println("[CREATE] Executor OK — system ready.");
 }
