@@ -237,7 +237,7 @@ void create_entities()
 
     RCCHECK(rclc_publisher_init_default(
         &jga_motors.odom_pub, &node_motor,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(nav_msgs, msg, Odometry), "/minibot/odom"));
+        ROSIDL_GET_MSG_TYPE_SUPPORT(nav_msgs, msg, Odometry), "/odom"));
 
     RCCHECK(rclc_publisher_init_default(
         &imu_sensor.imu_pub, &node_motor,
