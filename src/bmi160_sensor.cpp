@@ -148,9 +148,9 @@ void Bmi160Sensor::timer_imu_callback(rcl_timer_t *timer, int64_t last_call_time
     y += vy * dt;
 
     // ---------------------------------------------------------
-    // 6. PUBLICAR TF
+    // 6. PUBLICAR TF                   ///////COMENTADO PARA SLAM
     // ---------------------------------------------------------
-    if (tf_pub.impl != NULL && rmw_uros_ping_agent(100, 1) == RMW_RET_OK)
+   /* if (tf_pub.impl != NULL && rmw_uros_ping_agent(100, 1) == RMW_RET_OK)
     {
         tf_msg.transforms.data[0].header.stamp.sec = imu_msg.header.stamp.sec;
         tf_msg.transforms.data[0].header.stamp.nanosec = imu_msg.header.stamp.nanosec;
@@ -169,5 +169,5 @@ void Bmi160Sensor::timer_imu_callback(rcl_timer_t *timer, int64_t last_call_time
         tf_msg.transforms.data[0].transform.rotation.w = cos(theta / 2.0);
 
         rcl_publish(&tf_pub, &tf_msg, NULL);
-    }
+    }*/
 }
