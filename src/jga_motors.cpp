@@ -117,14 +117,10 @@ void JgaMotors::cmd_vel_sub_callback(const void *msgin)
     float v_l = lin - (ang * WHEEL_BASE / 2.0f);
     float v_r = lin + (ang * WHEEL_BASE / 2.0f);
 
-    float limiteSup = VEL_MIN_MS - 0.01f;
-    float limiteInf = -VEL_MIN_MS + 0.01f;
-
-    bool req_parada_l = (v_l > limiteInf && v_l < limiteSup);
-    bool req_parada_r = (v_r > limiteInf && v_r < limiteSup);
-
-    if (req_parada_l && req_parada_r) {
-        // Zona de parada global
+    // 1. ¿El comando de ROS es un CERO absoluto (o puro ruido < 1mm/s)?
+    if (fabs(lin) < 0.001f && fabs(ang) < 0.001f) {
+        
+        // Zona de parada global (Misma lógica de frenado suave que tenías)
         if (estadoActual == ESTADO_NORMAL) {
             estadoActual = ESTADO_PARANDO;
             
@@ -136,8 +132,18 @@ void JgaMotors::cmd_vel_sub_callback(const void *msgin)
             setpointObjetivoRPM_l = msToRPM(VEL_MIN_MS) * signo_l;
             setpointObjetivoRPM_r = msToRPM(VEL_MIN_MS) * signo_r;
         }
+        
     } else {
-        // Zona ESTADO_NORMAL
+        
+        // 2. ROS QUIERE MOVERSE. Aseguramos que la velocidad venza la fricción física.
+        // Si la rueda debe moverse pero su velocidad es menor a la mínima, la "empujamos" a VEL_MIN_MS conservando su dirección.
+        if (v_l > 0.001f && v_l < VEL_MIN_MS) v_l = VEL_MIN_MS;
+        else if (v_l < -0.001f && v_l > -VEL_MIN_MS) v_l = -VEL_MIN_MS;
+
+        if (v_r > 0.001f && v_r < VEL_MIN_MS) v_r = VEL_MIN_MS;
+        else if (v_r < -0.001f && v_r > -VEL_MIN_MS) v_r = -VEL_MIN_MS;
+
+        // 3. Limitar a la velocidad máxima
         v_l = constrain(v_l, -VEL_MAX_MS, VEL_MAX_MS);
         v_r = constrain(v_r, -VEL_MAX_MS, VEL_MAX_MS);
         
@@ -146,6 +152,7 @@ void JgaMotors::cmd_vel_sub_callback(const void *msgin)
         int nuevoSigno_l = (nuevoSP_l > 0) ? 1 : -1;
         int nuevoSigno_r = (nuevoSP_r > 0) ? 1 : -1;
 
+        // Si estábamos parados o cambiamos de dirección drásticamente, reactivamos arranque
         if (estadoActual == ESTADO_STOPPED || estadoActual == ESTADO_FRENO || 
            (signoAnterior_l != 0 && nuevoSigno_l != signoAnterior_l) ||
            (signoAnterior_r != 0 && nuevoSigno_r != signoAnterior_r)) {
@@ -284,6 +291,7 @@ void JgaMotors::timer_odometry_callback(rcl_timer_t *timer, int64_t last_call_ti
     // --- 7. ACTUALIZAR ODOMETRÍA Y PUBLICAR ROS ---
     update_pose(deltaTicks_l, deltaTicks_r);
 
+    // 1. Odometría (Mantiene el tiempo real 't_ms' exacto)
     odom_msg.header.stamp.sec     = (int32_t)(t_ms / 1000);
     odom_msg.header.stamp.nanosec = (uint32_t)((t_ms % 1000) * 1000000UL);
     odom_msg.header.frame_id.data = const_cast<char *>("odom");
@@ -308,8 +316,12 @@ void JgaMotors::timer_odometry_callback(rcl_timer_t *timer, int64_t last_call_ti
     if (odom_pub.impl != NULL)
         rcl_publish(&odom_pub, &odom_msg, NULL);
 
-    tf_msg.transforms.data[0].header.stamp.sec        = odom_msg.header.stamp.sec;
-    tf_msg.transforms.data[0].header.stamp.nanosec    = odom_msg.header.stamp.nanosec;
+    // 2. Árbol de Transformaciones (TF) - EL TRUCO DE LATENCIA Wi-Fi
+    // Le sumamos 120 ms al tiempo actual para permitir la interpolación de ROS
+    int64_t tf_time_ms = t_ms + 140;
+
+    tf_msg.transforms.data[0].header.stamp.sec        = (int32_t)(tf_time_ms / 1000);
+    tf_msg.transforms.data[0].header.stamp.nanosec    = (uint32_t)((tf_time_ms % 1000) * 1000000UL);
     tf_msg.transforms.data[0].header.frame_id.data    = const_cast<char *>("odom");
     tf_msg.transforms.data[0].header.frame_id.size    = 4;
     tf_msg.transforms.data[0].child_frame_id.data     = const_cast<char *>("base_link");

@@ -63,12 +63,9 @@ public:
     TaskHandle_t rosPubTaskHandle;                 // Task handle for publishing to ROS
 
 private:
-    // Private helper methods (if needed)
-
     // FreeRTOS queue handle 
     QueueHandle_t lidar_data_queue;                // Queue used to pass scan data between tasks
     
-
     // Pin used for receiving serial data from the Lidar
     int lidar_rx_pin;
     // Pin to enable/disable the Lidar motor
@@ -89,6 +86,7 @@ private:
     // Frame tracking variables
     const uint16_t end_of_scan;                    // Marker to indicate the last sample of a scan
     uint16_t frame_index;                          // Counter to track scan frame sequence
+    uint16_t last_start_angle;                     // Tracks the angle of the previous frame for zero-crossing detection
 };
 
 #endif // XIAOMI_LIDAR_HPP

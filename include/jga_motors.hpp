@@ -112,12 +112,12 @@ private:
     static constexpr float TICKS_POR_VUELTA = 1980.0f;  
     static constexpr float RADIO_RUEDA_M = 0.0425f;  
     static constexpr float PERIMETRO_RUEDA_M = 2.0f * PI * RADIO_RUEDA_M;
-    static constexpr float WHEEL_BASE = 0.21f;
+    static constexpr float WHEEL_BASE = 0.225f;
 
-    float VEL_MIN_MS = 0.15f;
-    float VEL_MAX_MS = 0.50f;
+    float VEL_MIN_MS = 0.08f;
+    float VEL_MAX_MS = 0.3f;
 
-    static const int PERIODO_MS = 50;
+    static const int PERIODO_MS = 40;
     static constexpr float ALPHA = 0.4f;
     static constexpr float RAMPA_CAMBIO_RPM = 10.0f;
     static constexpr float BANDA_MUERTA_RPM = 2.0f;

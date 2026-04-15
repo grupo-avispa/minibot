@@ -23,6 +23,7 @@ XiaomiLidar::XiaomiLidar()
       range_scale(0.25f * 0.001f),           // Conversion factor to meters
       end_of_scan(XIAOMI_LIDAR_END_OF_SCAN), // Reserved value to mark end of scan
       frame_index(XIAOMI_LIDAR_FRAME_INDEX_INIT),
+      last_start_angle(0),                   // Initialize zero-crossing tracker
       lidar_rx_pin(XIAOMI_LIDAR_RX_PIN),
       motor_lidar_enable_pin(XIAOMI_LIDAR_MOTOR_ENABLE_PIN), // Pin to enable/disable lidar motor
       lidar_data_queue(nullptr),
@@ -71,8 +72,6 @@ void XiaomiLidar::SerialReadTask(void *pvParameters)
         + The checksum, which is 2 bytes (MSB and LSB)
         + The checksum calculation does not include the last 2 bytes of the frame (the proper checksum bytes)
     */
-    // Reserve space for parameters which enables fastest access.
-    // The number of parameters is variable, but we reserve a maximum size that will never be exceeded.
     frame.parameters.reserve(65);
     bool current_frame_is_end_of_scan = false;
     while (true)
@@ -88,11 +87,6 @@ void XiaomiLidar::SerialReadTask(void *pvParameters)
                 {
                     checksum = by;
                     status = 1;
-                    // Serial.println("Frame Header OK");
-                }
-                else
-                {
-                    // Serial.println("ERROR: Frame Header Failed");
                 }
                 break;
             case 1: // Frame Length MSB
@@ -143,7 +137,6 @@ void XiaomiLidar::SerialReadTask(void *pvParameters)
                 break;
             case 7: // Parameter Length LSB
                 frame.parameterLength |= by;
-                // Serial.printf("Parameter Length: %d\n", frame.parameterLength);
                 checksum += by;
                 frame.parameters.clear();
                 status = 8;
@@ -173,7 +166,6 @@ void XiaomiLidar::SerialReadTask(void *pvParameters)
                 status = 0;
                 if (current_frame_is_end_of_scan)
                 {
-                    // Serial.println("End of scan frame processed");
                     vTaskDelay(10);
                 }
                 break;
@@ -191,54 +183,57 @@ void XiaomiLidar::SerialReadTask(void *pvParameters)
 void XiaomiLidar::RosPublishTask(void *pvParameters)
 {
     std::vector<uint16_t> samples_vector;
-    samples_vector.reserve(300); // Reserve space for 300 samples
+    samples_vector.reserve(400); // Reserve a bit more space just in case
     bool end_of_scan_received = false;
     uint16_t scan;
-    // Initialize the scan message
+    
+    // Initialize the scan message constants
     scan_msg.range_min = 0.05;
     scan_msg.range_max = 6.0;
-    scan_msg.header.frame_id.data = "base_link";
+    scan_msg.header.frame_id.data = "laser_link";
     scan_msg.header.frame_id.size = strlen(scan_msg.header.frame_id.data);
-    long init = 0;
+    
     while (true)
     {
         if (xQueueReceive(lidar_data_queue, &scan, portMAX_DELAY) == pdPASS)
         {
-            // Print queue size for debugging
             if (uxQueueMessagesWaiting(lidar_data_queue) > 590)
             {
                 Serial.printf("Queue size: %d\n", uxQueueMessagesWaiting(lidar_data_queue));
             }
-            // Store the received scan data in the vector in case is not the end of scan
+            
+            // Si llega el marcador, cerramos el paquete de datos
             if (scan == end_of_scan)
             {
                 end_of_scan_received = true;
-                // Serial.println("[SCAN] End of scan received");
             }
             else
             {
                 samples_vector.push_back(scan);
-                // Serial.printf("[SCAN] Sample received: %d\n", scan);
             }
         }
+        
         // Check if we received the end of scan signal
         if (end_of_scan_received)
         {
             end_of_scan_received = false;
-            // Create the scan message with the collected distances
-            create_scan_msg(samples_vector);
+            
+            // Prevent publishing empty or corrupted scans
+            if (samples_vector.size() > 0) {
+                create_scan_msg(samples_vector);
+                
+                // Publish the scan message
+                if (laser_publisher.impl != NULL || rmw_uros_ping_agent(150, 1) == RMW_RET_OK)
+                {
+                    rcl_publish(&laser_publisher, &scan_msg, NULL);
+                    Serial.printf("Published scan with %d samples\n", scan_msg.ranges.size);
+                }
+                else
+                {
+                    Serial.println("Agent not reachable, skipping scan publish.");
+                }
+            }
             samples_vector.clear(); // Clear the vector for the next scan
-            // Publish the scan message
-            if (laser_publisher.impl != NULL || rmw_uros_ping_agent(150, 1) == RMW_RET_OK)
-            {
-                rcl_publish(&laser_publisher, &scan_msg, NULL);
-                Serial.printf("Published scan with %d samples\n", scan_msg.ranges.size);
-            }
-            else
-            {
-                // If the agent is not reachable, do not publish
-                Serial.println("Agent not reachable, skipping scan publish.");
-            }
         }
     }
 }
@@ -246,28 +241,33 @@ void XiaomiLidar::RosPublishTask(void *pvParameters)
 // Constructs a LaserScan message from distance samples and fills scan_msg
 void XiaomiLidar::create_scan_msg(const std::vector<uint16_t> &samples)
 {
-    // Update the scan message with the new data
-    scan_msg.angle_max = samples.back() * angle_scale * (M_PI / 180.0f) + (2 * M_PI) / SCAN_STEPS;
-    scan_msg.angle_min = scan_msg.angle_max - (2 * M_PI);
-    scan_msg.angle_increment = 2 * M_PI / static_cast<float>(samples.size() - 1);
-    // Lógica de tiempo unificada (Elimina el desbordamiento de nanosegundos)
+    // Fijamos los ángulos al círculo completo físico del Lidar
+    scan_msg.angle_min = 0.0f;
+    scan_msg.angle_max = 2.0f * M_PI; 
+    
+    // El incremento depende únicamente del número total de muestras en este giro de 360 grados
+    size_t num_samples = samples.size();
+    scan_msg.angle_increment = (scan_msg.angle_max - scan_msg.angle_min) / static_cast<float>(num_samples);
+
     // Lógica de tiempo unificada
     int64_t current_time_ms = ros_synced_time_ms + (millis() - ms_before_sync);
     scan_msg.header.stamp.sec = current_time_ms / 1000;
     scan_msg.header.stamp.nanosec = (current_time_ms % 1000) * 1000000;
 
-    // Deallocate the memory from heap
+    // Liberamos y reasignamos memoria. Note que ahora es samples.size() completo,
+    // porque ya no guardamos el start_angle al final del array.
     if (scan_msg.ranges.data != nullptr)
     {
         free(scan_msg.ranges.data);
     }
-    // Allocate memory for the ranges data
-    scan_msg.ranges.data = (float *)malloc(samples.size() * sizeof(float));
-    scan_msg.ranges.capacity = samples.size() - 1;
-    scan_msg.ranges.size = samples.size() - 1;
-    for (size_t i = 0; i < samples.size() - 1; ++i)
+    scan_msg.ranges.data = (float *)malloc(num_samples * sizeof(float));
+    scan_msg.ranges.capacity = num_samples;
+    scan_msg.ranges.size = num_samples;
+    
+    for (size_t i = 0; i < num_samples; ++i)
     {
-        scan_msg.ranges.data[i] = static_cast<float>(samples[i]) * range_scale;
+        // Mantenemos la inversión que tenías, si es necesaria para la orientación de tu URDF
+        scan_msg.ranges.data[i] = static_cast<float>(samples[num_samples - 1 - i]) * range_scale;
     }
 }
 
@@ -288,41 +288,38 @@ bool XiaomiLidar::ProcessLidarFrame(const XiaomiLidarFrame &frame)
     {
         uint16_t start_angle = (frame.parameters[3] << 8) | frame.parameters[4];
 
-        frame_index++;
-
         int sample_cnt = static_cast<int>((frame.parameterLength - 5) / 3);
         for (int i = 0; i < sample_cnt; i++)
         {
             uint16_t distance = (frame.parameters[5 + (i * 3) + 1] << 8) | frame.parameters[5 + (i * 3) + 2];
-            // Any distance can be end of scan
+            
+            // Any distance can be end of scan marker evasion
             if (distance == end_of_scan)
             {
                 distance = end_of_scan - 1;
             }
+            
+            // Mandamos solo la distancia a la cola
             if (xQueueSend(lidar_data_queue, &distance, portMAX_DELAY) != pdTRUE)
             {
                 Serial.println("ERROR: Failed to send scan data to queue");
             }
         }
 
-        if (frame_index == (SCAN_STEPS))
+        // DETECCIÓN DE CRUCE POR CERO
+        // Si el ángulo inicial de este paquete es menor que el del paquete anterior,
+        // significa que el Lidar ha cruzado físicamente la marca de los 0 grados.
+        if (start_angle < last_start_angle)
         {
-            // Send last angle before end of scan
-            if (start_angle == end_of_scan)
-            {
-                start_angle = end_of_scan - 1;
-            }
-            if (xQueueSend(lidar_data_queue, &start_angle, portMAX_DELAY) != pdTRUE)
-            {
-                Serial.println("ERROR: Failed to send end angle scan to queue");
-            }
             if (xQueueSend(lidar_data_queue, &end_of_scan, portMAX_DELAY) != pdTRUE)
             {
                 Serial.println("ERROR: Failed to send end of scan to queue");
             }
-            frame_index = 0; // Reset frame index for the next scan
             current_frame_is_end_of_scan = true;
         }
+        
+        // Actualizamos el ángulo para compararlo en la siguiente iteración
+        last_start_angle = start_angle;
     }
     break;
     }
