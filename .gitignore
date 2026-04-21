@@ -5,5 +5,5 @@
 .vscode/ipch
 extra_packages/*
 !extra_packages/.gitkeep
-config/uros_wifi_config.h
+
 config/secrets.h
