@@ -1,16 +1,49 @@
 #ifndef UROS_WIFI_CONFIG_H
 #define UROS_WIFI_CONFIG_H
 
+
 //Includes
 #include <stdint.h>
 #include <Arduino.h>
 
-char ssid[] = "SSID_HERE";
-char psk[] = "SSID_PASSWORD_HERE";
+
+/*
+char ssid[] = "clarc1";
+char psk[] = "robotclarc1";
 
 //uros agent
-IPAddress agent_ip(0, 0, 0, 0);
-size_t agent_port = 0000;               //IP address and port of the uROS agent, to which the micro-ROS client will connect. The IP address and port must be the same as those used by the uROS agent.
+IPAddress agent_ip(192, 168, 0, 32);
+size_t agent_port = 8888;
+
+*/
+
+/*
+char ssid[] = "DIGIFIBRA-xeN2";
+char psk[] = "ZkszfdsyKDG9";
+
+//uros agent
+IPAddress agent_ip(192, 168, 1, 144);
+size_t agent_port = 8888; 
+
+*/
+/*
+
+ char ssid[] = "MOVISTAR-ACA8 2,4Ghz";
+char psk[] = "3A4uv7W4FqE7AT4v773v";
+
+//uros agent
+IPAddress agent_ip(192, 168, 1, 51);
+size_t agent_port = 8888; 
+*/
 
 
-#endif
+char ssid[] = "Robotito WIFI";
+char psk[] = "MiniROS2026";
+
+//uros agent
+IPAddress agent_ip(192, 168, 0, 100);
+size_t agent_port = 8888;
+
+
+
+#endif // UROS_WIFI_CONFIG_H

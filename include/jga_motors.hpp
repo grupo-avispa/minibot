@@ -110,9 +110,14 @@ private:
     // ─────────────────────────────────────────────────────────────────────────
     static const int MIN_PWM_REAL = 40;
     static constexpr float TICKS_POR_VUELTA = 1980.0f;  
-    static constexpr float RADIO_RUEDA_M = 0.0425f;  
+    //static constexpr float RADIO_RUEDA_M = 0.0425f;   //v1 robotito
+    //static constexpr float WHEEL_BASE = 0.225f;       //v1 robotito
+
+    static constexpr float RADIO_RUEDA_M = 0.0427f;   //v2 robotito
+    static constexpr float WHEEL_BASE = 0.2195f;        //v2 robotito
+
+
     static constexpr float PERIMETRO_RUEDA_M = 2.0f * PI * RADIO_RUEDA_M;
-    static constexpr float WHEEL_BASE = 0.225f;
 
     float VEL_MIN_MS = 0.08f;
     float VEL_MAX_MS = 0.3f;

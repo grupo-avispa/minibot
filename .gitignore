@@ -4,6 +4,7 @@
 .vscode/launch.json
 .vscode/ipch
 extra_packages/*
+build/*
 !extra_packages/.gitkeep
-
+config/uros_wifi_config.h
 config/secrets.h
