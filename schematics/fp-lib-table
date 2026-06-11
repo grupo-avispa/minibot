@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "SW_and_BTN")(type "KiCad")(uri "${KIPRJMOD}/SW_and_BTN.pretty")(options "")(descr ""))
+)

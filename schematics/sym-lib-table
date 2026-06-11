@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "tmc2208")(type "KiCad")(uri "${KIPRJMOD}/tmc2208.kicad_sym")(options "")(descr ""))
+)
